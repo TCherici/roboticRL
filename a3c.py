@@ -9,6 +9,7 @@ import threading
 import distutils.version
 use_tf12_api = distutils.version.LooseVersion(tf.VERSION) >= distutils.version.LooseVersion('0.12.0')
 
+
 def discount(x, gamma):
     return scipy.signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
 
@@ -73,7 +74,7 @@ that would constantly interact with the environment and tell it what to do.  Thi
 """
     def __init__(self, env, policy, num_local_steps, visualise):
         threading.Thread.__init__(self)
-        self.queue = queue.Queue(5)
+        self.queue = queue.Queue(15)
         self.num_local_steps = num_local_steps
         self.env = env
         self.last_features = None
@@ -175,7 +176,8 @@ should be computed.
                 self.network = LSTMPolicy(env.observation_space.shape, env.action_space.n)
                 self.global_step = tf.get_variable("global_step", [], tf.int32, initializer=tf.constant_initializer(0, dtype=tf.int32),
                                                    trainable=False)
-
+                self.network.global_step = self.global_step
+                                       
         with tf.device(worker_device):
             with tf.variable_scope("local"):
                 self.local_network = pi = LSTMPolicy(env.observation_space.shape, env.action_space.n)
@@ -199,14 +201,6 @@ should be computed.
 
             bs = tf.to_float(tf.shape(pi.x)[0])
             self.loss = pi_loss + 0.5 * vf_loss - entropy * 0.01
-
-            # 20 represents the number of "local steps":  the number of timesteps
-            # we run the policy before we update the parameters.
-            # The larger local steps is, the lower is the variance in our policy gradients estimate
-            # on the one hand;  but on the other hand, we get less frequent parameter updates, which
-            # slows down learning.  In this code, we found that making local steps be much
-            # smaller than 20 makes the algorithm more difficult to tune and to get to work.
-            self.runner = RunnerThread(env, pi, 20, visualise)
 
 
             grads = tf.gradients(self.loss, pi.var_list)
@@ -242,15 +236,30 @@ should be computed.
             self.train_op = tf.group(opt.apply_gradients(grads_and_vars), inc_step)
             self.summary_writer = None
             self.local_steps = 0
-
+            
+            # 20 represents the number of "local steps":  the number of timesteps
+            # we run the policy before we update the parameters.
+            # The larger local steps is, the lower is the variance in our policy gradients estimate
+            # on the one hand;  but on the other hand, we get less frequent parameter updates, which
+            # slows down learning.  In this code, we found that making local steps be much
+            # smaller than 20 makes the algorithm more difficult to tune and to get to work.
+            if task == 0:
+                global mainrunner
+                mainrunner = RunnerThread(env, self.network, 20, visualise)
+                print(globals()['mainrunner'])
+            else:
+                mainrunner = None
+                global mainrunner
+                print(globals()['mainrunner'])
+            self.runner = mainrunner
     def start(self, sess, summary_writer):
         self.runner.start_runner(sess, summary_writer)
         self.summary_writer = summary_writer
 
     def pull_batch_from_queue(self):
         """
-self explanatory:  take a rollout from the queue of the thread runner.
-"""
+        self explanatory:  take a rollout from the queue of the thread runner.
+        """
         rollout = self.runner.queue.get(timeout=600.0)
         while not rollout.terminal:
             try:
@@ -261,10 +270,10 @@ self explanatory:  take a rollout from the queue of the thread runner.
 
     def process(self, sess):
         """
-process grabs a rollout that's been produced by the thread runner,
-and updates the parameters.  The update is then sent to the parameter
-server.
-"""
+        process grabs a rollout that's been produced by the thread runner,
+        and updates the parameters.  The update is then sent to the parameter
+        server.
+        """
 
         sess.run(self.sync)  # copy weights from shared to local
         rollout = self.pull_batch_from_queue()

@@ -22,8 +22,7 @@ class FastSaver(tf.train.Saver):
         super(FastSaver, self).save(sess, save_path, global_step, latest_filename,
                                     meta_graph_suffix, False)
 
-def run(args, server):
-    env = create_env(args.env_id, client_id=str(args.task), remotes=args.remotes)
+def run(env, args, server):
     trainer = A3C(env, args.task, args.visualise)
 
     # Variable names that start with "local" are not saved in checkpoints.
@@ -141,8 +140,10 @@ Setting up Tensorflow for data parallel work
     if args.job_name == "worker":
         server = tf.train.Server(cluster, job_name="worker", task_index=args.task,
                                  config=tf.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=2))
-        run(args, server)
+        env = create_env(args.env_id, client_id=str(args.task), remotes=args.remotes)
+        run(env, args, server)
     else:
+        global mainrunner
         server = tf.train.Server(cluster, job_name="ps", task_index=args.task,
                                  config=tf.ConfigProto(device_filters=["/job:ps"]))
         while True:
